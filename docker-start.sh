@@ -16,6 +16,20 @@ set -uo pipefail
 ADBUILDER_PORT="${ADBUILDER_PORT:-8791}"
 AD_DIR=/app/modules/ad_builder
 
+# The two processes named the same secret differently, and nothing bridged
+# them: the Hub reads ADBUILDER_ADMIN_TOKEN (hub/ad_builder_proxy.py) and
+# render.yaml declares only that name, while the renderer reads ADMIN_TOKEN
+# and nothing else (modules/ad_builder/src/auth.ts). So setting the documented
+# variable satisfied the Hub -- the "not configured" notice disappeared -- and
+# the renderer went on refusing every internal route. The tool loads and no
+# button works, which is the hardest kind of broken to diagnose.
+#
+# Bridged here rather than renamed on either side. The renderer ships its own
+# render.yaml and its README documents ADMIN_TOKEN, so it keeps that name for
+# when it moves to its own service; the Hub keeps the prefixed name that says
+# which tool the secret belongs to. An explicitly set ADMIN_TOKEN still wins.
+export ADMIN_TOKEN="${ADMIN_TOKEN:-${ADBUILDER_ADMIN_TOKEN:-}}"
+
 start_adbuilder() {
   # Loopback only. Binding this to 0.0.0.0 would publish an unauthenticated
   # renderer on the same host as the Hub.

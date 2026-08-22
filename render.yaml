@@ -203,6 +203,11 @@ services:
       # every internal route until this is set to 16+ characters. It is not
       # generated here on purpose: a rotating value would log everyone out of
       # the tool on each deploy. Set it once, in the Render dashboard.
+      #
+      # This one name is enough. The renderer itself reads ADMIN_TOKEN, and
+      # docker-start.sh copies this into that name before starting it -- so do
+      # not set a second variable, and do not expect the renderer's own logs to
+      # mention the name used here.
       - key: ADBUILDER_ADMIN_TOKEN
         sync: false
       # Loopback port for that process. Nothing outside the container reaches
