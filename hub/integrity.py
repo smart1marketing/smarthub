@@ -21,6 +21,9 @@ new module was written without knowing about it:
     the cost estimate, so the number quietly understates the bill.
   * **Unclamped list limits** — `?limit=-1` was a 500 on Postgres and a full
     table dump on SQLite.
+  * **JSON written to the disk with no copy in the database** — the disk is
+    not in the database backup and comes back empty if it is recreated, and a
+    module reading an empty file looks like a module with nothing in it.
 
 Read-only and cheap: it reads source, never runs it, and touches no API.
 """
@@ -300,6 +303,55 @@ def check_shared_services() -> list[dict]:
     return out
 
 
+def check_unbacked_json() -> list[dict]:
+    """JSON written straight to the disk, with no copy in the database.
+
+    Render's managed Postgres is backed up. The 5 GB disk mounted at /var/data
+    is not, and an empty one is what comes back from a plan change, a region
+    move or a resize. For a cache that is a non-event; for a file that is the
+    only copy of something it is unrecoverable loss, and — because the module
+    keeps working perfectly on an empty file — loss that announces itself as
+    "the list is empty" rather than as an error.
+
+    ``hub/jsonstore.py`` closes that by mirroring each write into the database
+    and restoring on a miss. This check lists what has not moved across yet, so
+    the remainder is a visible, shrinking number rather than something everyone
+    means to get to. It is not a defect on its own: a module here works exactly
+    as it always has, right up until the disk is recreated.
+    """
+    # Files that legitimately write JSON somewhere other than the data disk:
+    # repo fixtures, build scripts and one-off tools, none of which hold state.
+    exempt_files = {"hub/jsonstore.py", "hub/errors.py", "hub/audit.py",
+                    "modules/ad_builder/scripts/fix_safezones.py",
+                    "install_into_hub.py", "ui_check.py"}
+    out = []
+    for rel, src in _sources():
+        if rel in exempt_files or "/scripts/" in rel or rel.startswith("tools/"):
+            continue
+        if "json.dump(" not in src:
+            continue
+        # json.dump (not dumps) always writes to a file object, so its
+        # presence is the signal. Matching on a "*_DIR" name instead missed
+        # every module that called its directory something else — REPORT_DIR,
+        # REPORTS_DIR — which is most of the ones worth finding.
+        if "jsonstore" in src:
+            continue                    # already mirrored
+        mod = _module_of(rel)
+        out.append({
+            "file": rel, "module": mod,
+            "detail": f"{mod} writes JSON to the persistent disk without a "
+                      f"copy in the database. The disk is outside the database "
+                      f"backup and does not survive being recreated, so if "
+                      f"this file is the only copy of something, it is "
+                      f"unrecoverable.",
+            "fix": "Read and write through hub/jsonstore.py — read_json / "
+                   "write_json / delete_json — which keeps the same atomic "
+                   "write and adds the mirror. If the file is genuinely "
+                   "rebuildable, pass durable=False and say why.",
+        })
+    return out
+
+
 CHECKS = [
     ("pdf_resource_type", "PDF uploaded as an image type", "high", check_pdf_resource_type),
     ("convert_without_resize", "Converts without resizing", "high", check_convert_without_resize),
@@ -309,6 +361,7 @@ CHECKS = [
     ("shadowed_routes", "Routes hidden behind a mount", "high", check_shadowed_routes),
     ("bare_except_pass", "Silent exception handling", "low", check_bare_except_pass),
     ("shared_services", "Not yet on shared services", "low", check_shared_services),
+    ("unbacked_json", "JSON on the disk with no backup", "medium", check_unbacked_json),
 ]
 
 

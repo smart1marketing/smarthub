@@ -22,6 +22,7 @@ import os
 import re
 import secrets
 import threading
+from hub import jsonstore
 from hub.webargs import clamp_int
 
 FOLDER = os.environ.get("IMAGE_CREATOR_FOLDER", "smart1-image-projects")
@@ -54,12 +55,7 @@ def cloud_ready() -> bool:
 
 
 def _data_dir() -> str:
-    base = "/var/data" if os.path.isdir("/var/data") else os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        "data")
-    path = os.path.join(base, "image-projects")
-    os.makedirs(path, exist_ok=True)
-    return path
+    return jsonstore.data_dir("image-projects")
 
 
 def _index_path() -> str:
@@ -71,21 +67,18 @@ def slugify(v: str, fallback: str = "project") -> str:
     return s[:80] or fallback
 
 
+# The canvas is already mirrored to Cloudinary when it is configured, but the
+# index is not, and without the index a restored disk has a folder of canvases
+# nothing can list, name or attribute to a client. Both go through
+# hub.jsonstore now, so the copy exists whether or not Cloudinary is set up.
 def load_index() -> list[dict]:
-    try:
-        with open(_index_path(), encoding="utf-8") as fh:
-            rows = json.load(fh)
-        return rows if isinstance(rows, list) else []
-    except (OSError, ValueError):
-        return []
+    rows = jsonstore.read_json(_index_path(), default=[])
+    return rows if isinstance(rows, list) else []
 
 
 def _save_index(rows: list[dict]):
     with _lock:
-        tmp = _index_path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(rows, fh, indent=1)
-        os.replace(tmp, _index_path())
+        jsonstore.write_json(_index_path(), rows, indent=1)
 
 
 def _canvas_path(pid: str) -> str:
@@ -153,8 +146,7 @@ def save_project(name: str, canvas: dict, preview: str = "", client: str = "",
     pid = existing["id"] if existing else ("proj_" + secrets.token_hex(6))
     now = _dt.datetime.now()
 
-    with open(_canvas_path(pid), "w", encoding="utf-8") as fh:
-        json.dump(canvas, fh)
+    jsonstore.write_json(_canvas_path(pid), canvas)
     canvas_url = ""
     try:
         canvas_url = _upload_raw(pid, canvas)
@@ -198,11 +190,9 @@ def save_project(name: str, canvas: dict, preview: str = "", client: str = "",
 def get_canvas(pid: str) -> dict | None:
     if not re.match(r"^proj_[a-f0-9]{6,}$", str(pid or "")):
         return None
-    try:
-        with open(_canvas_path(pid), encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        pass
+    canvas = jsonstore.read_json(_canvas_path(pid), default=None)
+    if canvas is not None:
+        return canvas
     row = next((r for r in load_index() if r.get("id") == pid), None)
     if row and row.get("canvas_url"):                 # fall back to Cloudinary
         try:
@@ -243,12 +233,17 @@ def delete_project(pid: str) -> bool:
                                             invalidate=True)
             except Exception as exc:                  # noqa: BLE001
                 print("cloudinary destroy failed:", exc)
-    for path in (_canvas_path(pid), os.path.join(_data_dir(), f"{pid}-preview.webp")):
-        if os.path.isfile(path):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+    # delete_json for the canvas so the mirrored copy goes with it — deleting
+    # only the file would let the next get_canvas() restore it from the
+    # database, and the project would come back from the dead. The preview is
+    # a plain image with no mirror, so a plain remove is right for it.
+    jsonstore.delete_json(_canvas_path(pid))
+    preview = os.path.join(_data_dir(), f"{pid}-preview.webp")
+    if os.path.isfile(preview):
+        try:
+            os.remove(preview)
+        except OSError:
+            pass
     _save_index([r for r in rows if r.get("id") != pid])
     return True
 

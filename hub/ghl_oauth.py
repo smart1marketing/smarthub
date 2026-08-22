@@ -75,10 +75,8 @@ class GhlOAuthError(RuntimeError):
 
 # ------------------------------------------------------------------ storage
 def _data_dir() -> str:
-    base = "/var/data" if os.path.isdir("/var/data") else os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-    os.makedirs(base, exist_ok=True)
-    return base
+    from . import jsonstore
+    return jsonstore.data_root()
 
 
 def _store_path() -> str:
@@ -110,17 +108,21 @@ def _save(record: dict) -> None:
     blob = {"enc": bool(f)}
     blob["data"] = (f.encrypt(raw).decode("ascii") if f
                     else raw.decode("utf-8"))
-    tmp = _store_path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(blob, fh)
-    os.replace(tmp, _store_path())          # atomic: never a half-written file
+    # Through hub.jsonstore, which keeps the same atomic write and adds the
+    # database mirror. This file is the only copy of the agency refresh token:
+    # if the disk is recreated it cannot be re-derived from anywhere, and every
+    # Suite call quietly drops back to the Private Integration Token that
+    # cannot read sub-account resources — the exact failure this module was
+    # written to end. Recovery would mean an agency owner re-consenting to the
+    # marketplace app, and nothing would say that is what happened.
+    from . import jsonstore
+    jsonstore.write_json(_store_path(), blob)
 
 
 def _load() -> dict | None:
-    try:
-        with open(_store_path(), encoding="utf-8") as fh:
-            blob = json.load(fh)
-    except (OSError, ValueError):
+    from . import jsonstore
+    blob = jsonstore.read_json(_store_path(), default=None)
+    if not isinstance(blob, dict):
         return None
     data = blob.get("data")
     if not data:
@@ -144,10 +146,11 @@ def disconnect() -> None:
     drops our copy of the tokens, so re-consenting is the way back."""
     with _lock:
         _loc_cache.clear()
-        try:
-            os.remove(_store_path())
-        except OSError:
-            pass
+        # delete_json, not os.remove: dropping only the file would leave the
+        # mirrored copy behind for the next _load() to restore, so disconnect
+        # would appear to work and then silently undo itself.
+        from . import jsonstore
+        jsonstore.delete_json(_store_path())
 
 
 # ------------------------------------------------------------------- config

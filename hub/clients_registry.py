@@ -14,21 +14,18 @@ Everything that asks "which client is this?" reads from here, so a house site
 behaves like any other client without pretending to be a paying one.
 """
 import datetime as _dt
-import json
 import os
 import re
 import threading
 
+from . import jsonstore
 from . import knack_data
 
 _lock = threading.Lock()
 
 
 def _store_base() -> str:
-    base = "/var/data" if os.path.isdir("/var/data") else os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-    os.makedirs(base, exist_ok=True)
-    return base
+    return jsonstore.data_root()
 
 
 def _house_path() -> str:
@@ -46,21 +43,17 @@ def norm_domain(value: str) -> str:
 
 
 # ------------------------------------------------------------- house clients
+# House clients exist only here. A Knack client can be re-read from Knack; a
+# house site has no upstream to be re-read from, so this file is the whole
+# record and it goes through hub.jsonstore to reach the database backup.
 def house_clients() -> list[dict]:
-    try:
-        with open(_house_path(), encoding="utf-8") as fh:
-            rows = json.load(fh)
-        return rows if isinstance(rows, list) else []
-    except (OSError, ValueError):
-        return []
+    rows = jsonstore.read_json(_house_path(), default=[])
+    return rows if isinstance(rows, list) else []
 
 
 def _write_house(rows: list[dict]):
     with _lock:
-        tmp = _house_path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(rows, fh, indent=1)
-        os.replace(tmp, _house_path())
+        jsonstore.write_json(_house_path(), rows, indent=1)
 
 
 def add_house_client(name: str, url: str = "", notes: str = "",

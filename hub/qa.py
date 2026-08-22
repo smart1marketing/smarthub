@@ -13,6 +13,7 @@ import json
 import os
 import re
 
+from . import jsonstore
 from . import knack_data
 
 
@@ -125,19 +126,19 @@ def _norm_name(s: str) -> str:
 # partner who reports themselves. Without somewhere to record that, the same
 # names sit on the report forever and people stop reading it.
 
+# Both files below are human decisions with no upstream: who was excused from
+# a report and why, and which partner owns an invoiced-off customer. Nothing
+# can recompute them, so they go through hub.jsonstore to land in the database
+# backup rather than only on a disk that is not backed up. Losing them would
+# not look like data loss either — the reports would simply start flagging
+# names that were settled months ago, and read as a regression in the checks.
 def _skip_path() -> str:
-    base = "/var/data" if os.path.isdir("/var/data") else os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-    os.makedirs(base, exist_ok=True)
-    return os.path.join(base, "dashboard_skips.json")
+    return os.path.join(jsonstore.data_root(), "dashboard_skips.json")
 
 
 def _load_skips() -> dict:
-    try:
-        with open(_skip_path(), encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return {}
+    data = jsonstore.read_json(_skip_path(), default={})
+    return data if isinstance(data, dict) else {}
 
 
 def _dash_skipped(client: str) -> bool:
@@ -152,20 +153,14 @@ def skip_dashboard(client: str, actor: str = "", reason: str = "") -> dict:
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "reason": reason,
     }
-    tmp = _skip_path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh)
-    os.replace(tmp, _skip_path())
+    jsonstore.write_json(_skip_path(), data)
     return {"ok": True, "skipped": len(data)}
 
 
 def unskip_dashboard(client: str) -> dict:
     data = _load_skips()
     data.pop(_norm_client(client), None)
-    tmp = _skip_path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh)
-    os.replace(tmp, _skip_path())
+    jsonstore.write_json(_skip_path(), data)
     return {"ok": True, "skipped": len(data)}
 
 
@@ -1122,25 +1117,18 @@ def ghl_billing_this_month() -> dict:
 
 # ---------------------------------------- invoice-off partner assignments
 def _assign_path() -> str:
-    base = "/var/data" if os.path.isdir("/var/data") else os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-    os.makedirs(base, exist_ok=True)
-    return os.path.join(base, "qa-invoice-partner.json")
+    return os.path.join(jsonstore.data_root(), "qa-invoice-partner.json")
 
 
 def invoice_assignments() -> dict:
-    try:
-        with open(_assign_path(), encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return {}
+    data = jsonstore.read_json(_assign_path(), default={})
+    return data if isinstance(data, dict) else {}
 
 
 def assign_invoice_partner(customer: str, partner: str):
     data = invoice_assignments()
     data[str(customer)] = str(partner)
-    with open(_assign_path(), "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=1)
+    jsonstore.write_json(_assign_path(), data, indent=1)
 
 
 def partner_list() -> list[str]:

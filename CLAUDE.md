@@ -24,6 +24,7 @@ Modules attach one of two ways, and the difference matters:
 Shared services live in `hub/`: `config.py` (typed settings), `storage.py`
 (Cloudinary), `ai.py` (OpenAI + cost tracking), `images.py`, `audit.py`
 (activity log), `extensions.py` (the shared SQLAlchemy instance),
+`jsonstore.py` (JSON on the disk, mirrored to the database),
 `scheduler.py` (background jobs).
 
 ---
@@ -69,6 +70,28 @@ which silently breaks callback matching.
 **Absent data must read as "not measured", not zero.** A clean-looking zero
 is a wrong answer presented confidently.
 
+**The Render disk is not backed up. The database is.** Render backs up managed
+Postgres; the 5 GB disk at `/var/data` is outside that, and a plan change,
+region move or resize hands back an empty one. Anything whose only copy was a
+JSON file on that disk was unrecoverable — and it fails *silently*, because a
+module reading a missing file shows an empty list, not an error. Write JSON
+through `hub/jsonstore.py`, which mirrors each write into the database and
+restores on a miss. Pass `durable=False` only for something genuinely
+rebuildable, and say in a comment what rebuilds it. `/api/integrity` flags any
+module still writing its own; `/api/backup` and `/diagnostics` say what is
+actually mirrored.
+
+**Deleting a mirrored file needs `jsonstore.delete_json`, not `os.remove`.**
+Removing only the file leaves the database copy to be restored by the next
+read, so the delete appears to work and then undoes itself. This is the one
+way the backup can bite you.
+
+**`os.environ.get("HUB_DATA_DIR", "data")` is not the data directory.**
+`HUB_DATA_DIR` is unset on this service, so that spelling silently resolves to
+`./data` inside the container and is wiped on *every deploy* — not merely if
+the disk is recreated. Page Image Optimizer and Tickets both had it, which is
+where their saved jobs and field map were going. Use `jsonstore.data_dir()`.
+
 ---
 
 ## Data sources, and which are stale
@@ -100,9 +123,9 @@ a domain means. Name matching produces false positives — "Riverside HVAC" vs
 
 ## Opportunistic migration — read this before editing any module
 
-`hub/storage.py` (Cloudinary), `hub/images.py` (resize/convert) and
-`hub/config.py` (settings) are the shared implementations. **They are used by
-almost none of the modules.** Instead, 15 modules configure Cloudinary
+`hub/storage.py` (Cloudinary), `hub/images.py` (resize/convert),
+`hub/jsonstore.py` (persisted JSON) and `hub/config.py` (settings) are the
+shared implementations. **They are used by almost none of the modules.** Instead, 15 modules configure Cloudinary
 themselves, 6 have their own resize code, and 55 files read environment
 variables directly.
 
@@ -129,6 +152,15 @@ What that means in practice:
     os.environ.get("PEXELS_API_KEY")
         -> from hub.config import settings;  settings.pexels_key
            (config already accepts every spelling in use)
+
+    open(path, "w") + json.dump(...)   /   open(path) + json.load(...)
+        -> from hub import jsonstore
+           jsonstore.write_json(path, data)   # atomic, and mirrored
+           jsonstore.read_json(path, default=[])
+           jsonstore.delete_json(path)        # never bare os.remove
+
+    base = "/var/data" if os.path.isdir("/var/data") else .../"data"
+        -> jsonstore.data_dir("my_module")
 
 If a shared function does not do what the module needs, extend the shared one
 rather than keeping the local copy. That is the whole point — the next fix

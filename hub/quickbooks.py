@@ -45,31 +45,32 @@ def configured() -> bool:
 
 
 def _token_path() -> str:
-    base = "/var/data" if os.path.isdir("/var/data") else os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-    os.makedirs(base, exist_ok=True)
-    return os.path.join(base, "quickbooks_tokens.json")
+    from . import jsonstore
+    return os.path.join(jsonstore.data_root(), "quickbooks_tokens.json")
 
 
+# Intuit rotates the refresh token on every refresh, so this file is the only
+# copy of the live one — there is no way to re-derive it and no second place it
+# exists. Through hub.jsonstore it is mirrored into the database, which is
+# backed up; the disk it used to live on alone is not. Losing it means someone
+# re-running the OAuth connect by hand, and until they do, Client 360 shows no
+# invoices for anybody with no indication that a token is the reason.
 def _load_tokens():
-    try:
-        with open(_token_path(), encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return None
+    from . import jsonstore
+    return jsonstore.read_json(_token_path(), default=None)
 
 
 def _save_tokens(tok):
+    from . import jsonstore
     with _lock:
-        with open(_token_path(), "w", encoding="utf-8") as fh:
-            json.dump(tok, fh)
+        jsonstore.write_json(_token_path(), tok)
 
 
 def disconnect():
-    try:
-        os.remove(_token_path())
-    except OSError:
-        pass
+    # delete_json, not os.remove — the mirrored copy has to go too, or the
+    # next _load_tokens() restores the file and the disconnect undoes itself.
+    from . import jsonstore
+    jsonstore.delete_json(_token_path())
 
 
 def health() -> dict:
@@ -84,10 +85,19 @@ def health() -> dict:
         isn't mounted, the file is written to the container filesystem and is
         gone on the next deploy, so the connection appears to drop every time
         you ship.
+
+    Since the token is mirrored through ``hub.jsonstore`` the second one has a
+    second line of defence: the copy in the database survives both a missing
+    disk and a recreated one, and the file is rewritten from it on the next
+    read. The warning below is therefore only raised when *neither* layer is
+    holding — an unmounted disk on its own no longer drops the connection, and
+    saying it does would send someone chasing a disk that is not the problem.
     """
+    from . import jsonstore
     tok = _load_tokens() or {}
     path = _token_path()
-    persistent = os.path.isdir("/var/data")
+    mirrored = jsonstore.available()
+    persistent = os.path.isdir("/var/data") or mirrored
     now = time.time()
     obtained = tok.get("obtained_at") or tok.get("issued_at")
     age_days = round((now - obtained) / 86400, 1) if obtained else None
@@ -97,9 +107,10 @@ def health() -> dict:
     problems = []
     if not persistent:
         problems.append(
-            "Tokens are being written to the container filesystem, not a "
-            "mounted disk — the connection will drop on every deploy. Confirm "
-            "the Render disk is mounted at /var/data.")
+            "Tokens are being written to the container filesystem, with no "
+            "mounted disk and no database mirror to fall back on — the "
+            "connection will drop on every deploy. Confirm the Render disk is "
+            "mounted at /var/data, or that DATABASE_URL is set.")
     if tok and days_left is not None and days_left < 14:
         problems.append(
             f"The refresh token is {age_days} days old and Intuit expires them "
@@ -112,6 +123,8 @@ def health() -> dict:
         "connected": bool(tok.get("refresh_token") and tok.get("realm_id")),
         "token_path": path,
         "persistent_storage": persistent,
+        "disk_mounted": os.path.isdir("/var/data"),
+        "backed_up": mirrored,
         "token_file_exists": os.path.isfile(path),
         "realm_id": bool(tok.get("realm_id")),
         "access_expires_in": (round(tok.get("expires_at", 0) - now)
@@ -266,26 +279,24 @@ _LINK_CACHE_NAME = "quickbooks_invoice_links.json"
 
 
 def _links_path() -> str:
-    base = "/var/data" if os.path.isdir("/var/data") else os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-    os.makedirs(base, exist_ok=True)
-    return os.path.join(base, _LINK_CACHE_NAME)
+    from . import jsonstore
+    return os.path.join(jsonstore.data_root(), _LINK_CACHE_NAME)
 
 
 def _load_links() -> dict:
-    try:
-        with open(_links_path(), encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return {}
+    from . import jsonstore
+    data = jsonstore.read_json(_links_path(), default={})
+    return data if isinstance(data, dict) else {}
 
 
 def _save_links(data: dict) -> None:
+    # durable=False, and this is the one file here that genuinely earns it:
+    # every link is re-fetched from QuickBooks by the invoice_links scheduler
+    # job three times a day, so a lost disk costs a few hours of shareable
+    # links rather than anything unrecoverable. Stated rather than assumed.
+    from . import jsonstore
     with _lock:
-        tmp = _links_path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh)
-        os.replace(tmp, _links_path())      # atomic: a crash can't truncate it
+        jsonstore.write_json(_links_path(), data, durable=False)
 
 
 def fetch_public_link(invoice_id) -> str:

@@ -32,6 +32,7 @@ import os
 import re
 import secrets
 import threading
+from hub import jsonstore
 import time
 from pathlib import Path
 
@@ -105,32 +106,26 @@ def cloud_ready() -> bool:
 
 # ------------------------------------------------------------------ storage
 def _data_dir() -> str:
-    base = "/var/data" if os.path.isdir("/var/data") else os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-    path = os.path.join(base, "seo-images")
-    os.makedirs(path, exist_ok=True)
-    return path
+    return jsonstore.data_dir("seo-images")
 
 
 _INDEX_PATH = os.path.join(_data_dir(), "archive.json")
 _index_lock = threading.Lock()
 
 
+# The images themselves are on Cloudinary; this index is what says which
+# client each one belongs to, what it was named and why. Cloudinary would
+# still hold every file after a disk loss and nothing would be able to say
+# whose they were — so the index goes through hub.jsonstore into the database
+# backup. Same atomic write as before, plus a copy that outlives the disk.
 def load_archive() -> list[dict]:
-    try:
-        with open(_INDEX_PATH, encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, list) else []
-    except (OSError, ValueError):
-        return []
+    data = jsonstore.read_json(_INDEX_PATH, default=[])
+    return data if isinstance(data, list) else []
 
 
 def save_archive(rows: list[dict]):
     with _index_lock:
-        tmp = _INDEX_PATH + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(rows, fh, indent=1)
-        os.replace(tmp, _INDEX_PATH)      # never leave a half-written index
+        jsonstore.write_json(_INDEX_PATH, rows, indent=1)
 
 
 # --------------------------------------------------- in-flight batch storage

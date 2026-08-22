@@ -178,26 +178,28 @@ def _row(rec: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _cache_path() -> str:
-    base = "/var/data" if os.path.isdir("/var/data") else os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-    os.makedirs(base, exist_ok=True)
-    return os.path.join(base, CACHE_NAME)
+    from . import jsonstore
+    return os.path.join(jsonstore.data_root(), CACHE_NAME)
 
 
 def _read_cache() -> dict:
-    try:
-        with open(_cache_path(), encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return {}
+    from . import jsonstore
+    # restore=False: never pull this back from the mirror. A stale cache
+    # restored after a disk loss would be served with a fresh-looking
+    # age_minutes and be believed; an empty one just refetches from Knack.
+    data = jsonstore.read_json(_cache_path(), default={}, restore=False)
+    return data if isinstance(data, dict) else {}
 
 
 def _write_cache(rows: list[dict]) -> None:
+    from . import jsonstore
     payload = {"fetched": time.time(), "count": len(rows), "rows": rows}
-    tmp = _cache_path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh)
-    os.replace(tmp, _cache_path())      # atomic — a crash can't truncate it
+    # durable=False, and this is the file the distinction was written for.
+    # It is every product on every IO — the largest thing on the disk — and
+    # the scheduler re-pulls it from Knack every three hours, so backing it up
+    # would put megabytes into every database backup to save at most one API
+    # call. Stated here so "not backed up" is a decision, not an oversight.
+    jsonstore.write_json(_cache_path(), payload, durable=False)
 
 
 def configured() -> bool:

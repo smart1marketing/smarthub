@@ -177,6 +177,22 @@ def create_hub_app() -> Flask:
         from . import quotas
         return jsonify(quotas.summary(request.args.get("month")))
 
+    @app.route("/api/backup")
+    def api_backup():
+        """What of the JSON on the disk is mirrored into the database.
+
+        The disk is not part of the database backup and does not survive being
+        recreated, so this answers "what would we actually lose?" — including
+        the files deliberately left out because they are rebuildable.
+        """
+        gate = _require_api()
+        if gate:
+            return gate
+        from . import jsonstore
+        out = jsonstore.status()
+        out["restore_at_boot"] = app.config.get("HUB_JSONSTORE_RESTORE")
+        return jsonify(out)
+
     @app.route("/api/integrity")
     def api_integrity():
         """Static audit for defect patterns that have each shipped before."""
@@ -3246,6 +3262,25 @@ def create_hub_app() -> Flask:
             app.config["HUB_DB_BOOT_ERROR"] = _tbl_err
     except Exception:  # noqa: BLE001
         pass
+
+    # Refill the persistent disk from the database if this is a *new* disk.
+    # JSON files on /var/data are outside the database backup and do not
+    # survive the disk being recreated, so hub/jsonstore.py mirrors the ones
+    # that are the only copy of something. On an ordinary boot this is two
+    # cheap queries and a no-op; on the first boot after a disk is recreated
+    # it is the whole recovery, and it has to happen here rather than lazily
+    # because /diagnostics and the sidebar read those files before any user
+    # does. Guarded like every other boot step — but recorded, not swallowed.
+    try:
+        from . import jsonstore
+        app.config["HUB_JSONSTORE_RESTORE"] = jsonstore.maybe_restore()
+    except Exception as _js_exc:  # noqa: BLE001
+        app.config["HUB_JSONSTORE_RESTORE"] = {
+            "ran": False, "reason": f"{type(_js_exc).__name__}: {_js_exc}"}
+        try:
+            errors.log_exception("jsonstore", _js_exc)
+        except Exception:  # noqa: BLE001
+            pass
 
     # ---------------- v7: help bubbles, tool walkthroughs, demo mode -------
     # Registered last, because it needs _hub_user (defined with the login

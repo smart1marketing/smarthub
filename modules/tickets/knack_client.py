@@ -12,6 +12,7 @@ import time
 import requests
 
 from . import config
+from hub import jsonstore
 
 _MEM = {}
 
@@ -128,17 +129,21 @@ def fetch_records(object_key, force=False):
 
 
 def _write_snapshot(object_key, records, at):
+    # durable=False. This is a copy of live Knack records kept only so the
+    # page can render something when the API is slow or down; Knack is the
+    # source of truth and re-reading it costs one request. Backing it up would
+    # mean every ticket in the system riding along in the database backup for
+    # no recovery value.
     try:
         os.makedirs(config.DATA_DIR, exist_ok=True)
-        with open(_snapshot_path(object_key), "w", encoding="utf-8") as fh:
-            json.dump({"at": at, "records": records}, fh)
+        jsonstore.write_json(_snapshot_path(object_key),
+                             {"at": at, "records": records}, durable=False)
     except Exception:
         pass
 
 
 def _read_snapshot(object_key):
-    try:
-        with open(_snapshot_path(object_key), "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except Exception:
-        return None
+    # restore=False for the same reason: a snapshot restored from a backup
+    # would carry its original "at" timestamp and be presented as that fresh.
+    return jsonstore.read_json(_snapshot_path(object_key), default=None,
+                               restore=False)

@@ -3,6 +3,7 @@ import json
 import os
 import re
 import tempfile
+from hub import jsonstore
 import uuid
 from typing import Any
 
@@ -43,8 +44,13 @@ MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 WEBHOOK_URL = (os.getenv("GHL_WEBHOOK_URL", "") or os.getenv("SMART1_WEBHOOK_URL", "")).strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
 
-REPORTS_DIR = os.path.join(tempfile.gettempdir(), "smart1boat_reports")
-os.makedirs(REPORTS_DIR, exist_ok=True)
+# Was tempfile.gettempdir(). A report here is what /r/<id> serves to a dealer
+# we sent the link to, so a temp directory meant every shared link 404'd on the
+# next deploy — "This report link is no longer available", for a report that
+# was fine an hour ago. On the persistent disk and mirrored to the database,
+# the link keeps working. The generated PDF stays alongside it and is not
+# mirrored: it is rebuilt from this JSON, so it is a genuine cache.
+REPORTS_DIR = jsonstore.data_dir("boat-reports")
 
 
 def slugify(s: str) -> str:
@@ -64,8 +70,8 @@ def _pdf_text(s: Any) -> str:
 
 def save_report(report: Any, dealer_name: str) -> str:
     rid = uuid.uuid4().hex[:12]
-    with open(os.path.join(REPORTS_DIR, f"{rid}.json"), "w") as f:
-        json.dump({"report": report, "dealer_name": dealer_name}, f)
+    jsonstore.write_json(os.path.join(REPORTS_DIR, f"{rid}.json"),
+                         {"report": report, "dealer_name": dealer_name})
     return rid
 
 
@@ -1042,10 +1048,9 @@ def get_report(rid: str):
     if not re.fullmatch(r"[a-f0-9]{12}", rid or ""):
         return jsonify({"ok": False, "error": "Not found"}), 404
     path = os.path.join(REPORTS_DIR, f"{rid}.json")
-    if not os.path.exists(path):
+    data = jsonstore.read_json(path, default=None)
+    if not isinstance(data, dict):
         return jsonify({"ok": False, "error": "This report link is no longer available."}), 404
-    with open(path) as f:
-        data = json.load(f)
     return jsonify({"ok": True, "report": data["report"], "dealer_name": data.get("dealer_name", "")})
 
 

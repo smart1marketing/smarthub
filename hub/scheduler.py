@@ -263,8 +263,31 @@ def job_refresh_knack_products(app) -> dict:
     return knack_products.refresh()
 
 
+def job_backup_json(app) -> dict:
+    """Mirror the durable JSON on the disk into the database.
+
+    Every module that has moved onto ``hub.jsonstore`` already mirrors on each
+    write, so on a healthy Hub this sweep finds nothing to do. It is here for
+    the two cases where per-write mirroring is not enough:
+
+      * a module still writing its own ``json.dump`` — covered from the next
+        sweep rather than from whenever somebody gets round to editing it;
+      * a write whose mirror was skipped because the database was asleep and
+        the circuit breaker was open — otherwise that file stays stale in the
+        backup until the next time a person happens to save it.
+
+    Hourly. The work is proportional to what has *changed* since the last pass,
+    not to the size of the disk, because each file's mtime is checked against
+    when it was last mirrored.
+    """
+    from hub import jsonstore
+    return jsonstore.sweep()
+
+
 # name -> (every N minutes, function, human description)
 JOBS = {
+    "backup_json":       (60, job_backup_json,
+                          "Mirror disk JSON into the database backup."),
     "clear_stuck_scans": (15, job_clear_stuck_scans,
                           "Resolve or error scans running past 30 minutes."),
     "rotate_audit_log":  (720, job_rotate_audit_log,

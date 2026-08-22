@@ -14,13 +14,17 @@ import threading
 import time
 
 from . import settings
+from hub import jsonstore
 
 _LOCK = threading.Lock()
 
-DATA_DIR = os.environ.get(
-    "PAGE_IMAGES_DATA_DIR",
-    os.path.join(os.environ.get("HUB_DATA_DIR", "data"), "page_image_optimizer"),
-)
+# Was os.environ.get("HUB_DATA_DIR", "data") — and HUB_DATA_DIR is not set on
+# this service, so jobs were landing in ./data inside the container and being
+# lost on *every deploy*, not merely if the disk were recreated. jsonstore's
+# root reads HUB_DATA_DIR first and falls back to the mounted /var/data, which
+# is what every other module already resolved to.
+DATA_DIR = os.environ.get("PAGE_IMAGES_DATA_DIR",
+                          jsonstore.data_dir("page_image_optimizer"))
 
 
 def _job_dir(job_id):
@@ -58,20 +62,13 @@ def create_job(payload):
 
 def _write(job_id, payload):
     payload["updated"] = time.time()
-    tmp = _meta_path(job_id) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh)
-    os.replace(tmp, _meta_path(job_id))
+    jsonstore.write_json(_meta_path(job_id), payload)
 
 
 def load_job(job_id):
     if not _valid_id(job_id):
         return None
-    try:
-        with open(_meta_path(job_id), encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return None
+    return jsonstore.read_json(_meta_path(job_id), default=None)
 
 
 def save_job(job):

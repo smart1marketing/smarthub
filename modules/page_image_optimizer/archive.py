@@ -16,14 +16,17 @@ import threading
 import time
 
 from . import settings
+from hub import jsonstore
 from hub.webargs import clamp_int
 
 _LOCK = threading.Lock()
 
+# Same defaulting bug as store.py: without HUB_DATA_DIR set this resolved to
+# ./data in the container, so the archive of everything the tool had ever saved
+# was discarded on each deploy. jsonstore's root resolves to the mounted disk.
 FALLBACK_ARCHIVE = os.environ.get(
     "PAGE_IMAGES_ARCHIVE_FILE",
-    os.path.join(os.environ.get("HUB_DATA_DIR", "data"),
-                 "page_image_optimizer_archive.json"),
+    os.path.join(jsonstore.data_root(), "page_image_optimizer_archive.json"),
 )
 
 
@@ -155,25 +158,18 @@ def record(**fields):
 
     with _LOCK:
         os.makedirs(os.path.dirname(FALLBACK_ARCHIVE) or ".", exist_ok=True)
-        try:
-            with open(FALLBACK_ARCHIVE, encoding="utf-8") as fh:
-                rows = json.load(fh)
-        except (OSError, ValueError):
+        rows = jsonstore.read_json(FALLBACK_ARCHIVE, default=[])
+        if not isinstance(rows, list):
             rows = []
         rows.insert(0, fields)
-        tmp = FALLBACK_ARCHIVE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(rows[:5000], fh)
-        os.replace(tmp, FALLBACK_ARCHIVE)
+        jsonstore.write_json(FALLBACK_ARCHIVE, rows[:5000])
     return fields.get("public_id")
 
 
 def recent(limit=200, company=None):
     """Read back what this tool has saved (local fallback store only)."""
-    try:
-        with open(FALLBACK_ARCHIVE, encoding="utf-8") as fh:
-            rows = json.load(fh)
-    except (OSError, ValueError):
+    rows = jsonstore.read_json(FALLBACK_ARCHIVE, default=[])
+    if not isinstance(rows, list):
         return []
     if company:
         rows = [r for r in rows if slug(r.get("company")) == slug(company)]

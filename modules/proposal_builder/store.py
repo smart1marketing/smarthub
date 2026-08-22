@@ -4,6 +4,7 @@ import json
 import os
 import re
 import threading
+from hub import jsonstore
 
 import requests
 from hub.webargs import clamp_int
@@ -22,12 +23,7 @@ except ImportError:  # pragma: no cover
 
 
 def _data_dir():
-    if os.path.isdir("/var/data"):
-        d = "/var/data/proposal-builder"
-    else:
-        d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-    os.makedirs(d, exist_ok=True)
-    return d
+    return jsonstore.data_dir("proposal-builder")
 
 
 DATA_DIR = _data_dir()
@@ -39,18 +35,18 @@ def _local_path(name):
     return os.path.join(DATA_DIR, name + ".json")
 
 
+# Cloudinary already holds a copy of every proposal — but only when it is
+# configured, and it was missing entirely before v7 (see render.yaml). The
+# local file was the fallback for exactly that case and was itself unbacked,
+# so the fallback had no fallback. Through hub.jsonstore it is mirrored into
+# the database, which means a proposal survives losing either one.
 def _local_read(name):
-    try:
-        with open(_local_path(name), encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return None
+    return jsonstore.read_json(_local_path(name), default=None)
 
 
 def _local_write(name, obj):
     try:
-        with open(_local_path(name), "w", encoding="utf-8") as fh:
-            json.dump(obj, fh, indent=2)
+        jsonstore.write_json(_local_path(name), obj, indent=2)
     except OSError as exc:  # pragma: no cover
         print("local write failed:", exc)
 

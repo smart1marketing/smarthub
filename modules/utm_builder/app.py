@@ -24,7 +24,6 @@ from __future__ import annotations
 import csv
 import datetime as _dt
 import io
-import json
 import os
 import re
 import secrets
@@ -33,6 +32,7 @@ from pathlib import Path
 from urllib.parse import (parse_qsl, quote, urlencode, urlparse, urlunparse)
 
 from flask import Flask, Response, jsonify, render_template, request
+from hub import jsonstore
 
 try:
     from hub import audit as hub_audit
@@ -67,12 +67,7 @@ _lock = threading.Lock()
 
 # ------------------------------------------------------------------ storage
 def _data_dir() -> str:
-    base = "/var/data" if os.path.isdir("/var/data") else os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        "data")
-    path = os.path.join(base, "utm")
-    os.makedirs(path, exist_ok=True)
-    return path
+    return jsonstore.data_dir("utm")
 
 
 def _links_path() -> str:
@@ -83,20 +78,20 @@ def _vocab_path() -> str:
     return os.path.join(_data_dir(), "vocabulary.json")
 
 
+# Reads and writes go through hub.jsonstore, which keeps the atomic .tmp +
+# rename this module already had and adds a mirror into the database. The
+# Render disk these files live on is not part of the database backup and does
+# not survive being recreated, and a tagged URL nobody can trace back to a
+# campaign is the exact failure this module exists to prevent — and the
+# vocabulary is the hand-curated spelling list that keeps them consistent.
+
 def _read(path: str, fallback):
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return fallback
+    return jsonstore.read_json(path, default=fallback)
 
 
 def _write(path: str, data):
     with _lock:
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=1)
-        os.replace(tmp, path)
+        jsonstore.write_json(path, data, indent=1)
 
 
 def load_vocab() -> dict:

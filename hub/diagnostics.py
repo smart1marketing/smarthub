@@ -362,6 +362,54 @@ def check_database() -> Check:
     return Check("database", "Database", state, detail, ms, required=True)
 
 
+def check_json_backup() -> Check:
+    """Is the JSON on the persistent disk mirrored anywhere backed up?
+
+    Render backs up the managed Postgres. It does not back up the 5 GB disk at
+    /var/data, and a recreated disk comes back empty — which for the files that
+    are the only copy of something (SEO working files, both OAuth tokens, Fan
+    Radio projects, the house client list) is unrecoverable loss that presents
+    itself as an empty list rather than as an error. hub/jsonstore.py mirrors
+    those writes into the database; this reports whether that is actually
+    happening, because a backup nobody has looked at is a belief, not a backup.
+    """
+    def go():
+        from hub import jsonstore
+        st = jsonstore.status()
+        if not st["ready"]:
+            return ("error",
+                    "Not mirroring — JSON on the disk is the only copy and the "
+                    f"disk is not backed up. {st['error'] or 'No database.'}")
+        if st.get("same_disk"):
+            return ("error",
+                    "The mirror is a SQLite file on the same disk it is meant "
+                    "to protect, because DATABASE_URL is not set — so a "
+                    "recreated disk destroys the files and the backup together. "
+                    "Everything below this line still reports healthy, which is "
+                    "why this is an error and not a warning.")
+        if st["breaker_open"]:
+            return ("warn",
+                    "Mirroring is paused after repeated database errors; it "
+                    f"retries within a minute. Last error: {st['error']}")
+        blobs = st["blobs"]
+        if blobs is None:
+            return ("unverified", "Could not count what is backed up.")
+        if not blobs:
+            return ("warn", "Connected, but nothing has been mirrored yet. "
+                            "The hourly backup_json job populates it.")
+        kb = round((st["bytes"] or 0) / 1024)
+        detail = f"{blobs} file{'s' if blobs != 1 else ''} mirrored ({kb} KB)"
+        if st["newest"]:
+            detail += f", newest {st['newest']}Z"
+        if st["declared_caches"]:
+            detail += (f". {len(st['declared_caches'])} deliberately excluded "
+                       f"as rebuildable.")
+        return ("ok", detail + ".")
+    (state, detail), ms = _timed(go)
+    return Check("json_backup", "JSON backup", state, detail, ms, required=True,
+                 fix="Set DATABASE_URL so hub/jsonstore.py can mirror the disk.")
+
+
 def check_public_base_url() -> Check:
     if not settings.public_base_url:
         return Check("public_base_url", "Public base URL", "error",
@@ -529,7 +577,8 @@ def check_google_accounts() -> list[Check]:
 
 
 CHECKS = [
-    check_database, check_public_base_url, check_openai, check_cloudinary,
+    check_database, check_json_backup, check_public_base_url,
+    check_openai, check_cloudinary,
     check_brandfetch, check_insites, check_removebg, check_pexels,
     check_pixabay, check_unsplash, check_google_fonts, check_ghl,
     check_ghl_app, check_knack, check_google_oauth, check_google_accounts,

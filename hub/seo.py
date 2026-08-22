@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 import requests
 
 from . import dates
+from . import jsonstore
 from . import knack_data
 
 _lock = threading.Lock()
@@ -26,12 +27,12 @@ UA = {"User-Agent": "Mozilla/5.0 (compatible; Smart1Hub-SEO/1.0; +https://smart1
 
 
 # ------------------------------------------------------------------ storage
+# Through hub.jsonstore rather than straight to the disk. These files are the
+# only copy of a client's SEO setup answers and every approved page schema —
+# months of work per client that exists nowhere else — and the Render disk they
+# sat on is outside the database backup and does not survive being recreated.
 def _store_base() -> str:
-    base = "/var/data" if os.path.isdir("/var/data") else os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-    path = os.path.join(base, "seo")
-    os.makedirs(path, exist_ok=True)
-    return path
+    return jsonstore.data_dir("seo")
 
 
 def slugify(name: str) -> str:
@@ -41,20 +42,16 @@ def slugify(name: str) -> str:
 
 def load_store(client: str) -> dict:
     path = os.path.join(_store_base(), slugify(client) + ".json")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return {"client": client, "setup": {}, "business_info": {},
-                "questions": [], "answers": {}, "pages": {}, "sitemap": []}
+    return jsonstore.read_json(path, default={
+        "client": client, "setup": {}, "business_info": {},
+        "questions": [], "answers": {}, "pages": {}, "sitemap": []})
 
 
 def save_store(client: str, data: dict):
     data["client"] = client
     path = os.path.join(_store_base(), slugify(client) + ".json")
     with _lock:
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=1)
+        jsonstore.write_json(path, data, indent=1)
 
 
 # -------------------------------------------------- attached accounts
@@ -514,18 +511,22 @@ def _brand_cache_path() -> str:
 
 
 def save_brandfetch(domain: str, payload: dict, client: str = ""):
-    """Persist a Brandfetch result so every client form can autofill from it."""
+    """Persist a Brandfetch result so every client form can autofill from it.
+
+    Backed up rather than treated as a cache, even though Brandfetch could be
+    asked again. The plan allows 100 lookups a month (BRANDFETCH_MONTHLY_LIMIT)
+    and this file holds one per client domain, so a lost disk would refill it
+    by spending a quota that /diagnostics already warns about at 80. A cache
+    you cannot afford to rebuild is not a cache.
+    """
     domain = str(domain or "").lower().removeprefix("www.")
     if domain:
-        try:
-            with open(_brand_cache_path(), encoding="utf-8") as fh:
-                cache = json.load(fh)
-        except (OSError, ValueError):
+        cache = jsonstore.read_json(_brand_cache_path(), default={})
+        if not isinstance(cache, dict):
             cache = {}
         cache[domain] = payload
         with _lock:
-            with open(_brand_cache_path(), "w", encoding="utf-8") as fh:
-                json.dump(cache, fh)
+            jsonstore.write_json(_brand_cache_path(), cache)
     if client:
         store = load_store(client)
         store["brandfetch"] = payload
@@ -540,10 +541,8 @@ def brand_for(client: str, domain: str = "") -> dict | None:
     domain = re.sub(r"^https?://", "", str(domain or "").lower()).removeprefix("www.").split("/")[0]
     if not domain:
         return None
-    try:
-        with open(_brand_cache_path(), encoding="utf-8") as fh:
-            cache = json.load(fh)
-    except (OSError, ValueError):
+    cache = jsonstore.read_json(_brand_cache_path(), default=None)
+    if not isinstance(cache, dict):
         return None
     return cache.get(domain)
 

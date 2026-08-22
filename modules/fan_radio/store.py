@@ -20,12 +20,12 @@ Two decisions worth stating:
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import secrets
 import threading
 from datetime import datetime, timezone
+from hub import jsonstore
 
 _lock = threading.RLock()
 
@@ -49,21 +49,19 @@ def _index_path() -> str:
     return os.path.join(data_dir(), "index.json")
 
 
+# Reads and writes go through hub.jsonstore, which keeps the atomic .tmp +
+# rename this module already had and adds a mirror into the database. The
+# Render disk these files live on is not part of the database backup and does
+# not survive being recreated, and a project here is the only copy of
+# every script version a client approved.
+
 def _read(path: str, fallback):
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return fallback
+    return jsonstore.read_json(path, default=fallback)
 
 
 def _write(path: str, data) -> None:
     with _lock:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=1, ensure_ascii=False)
-        os.replace(tmp, path)
+        jsonstore.write_json(path, data, indent=1)
 
 
 def now() -> str:
@@ -130,7 +128,10 @@ def delete(pid: str) -> bool:
     if not project:
         return False
     try:
-        os.remove(_project_path(pid))
+        # delete_json, not os.remove — dropping the file alone would leave
+        # the mirrored copy to be restored by the next read, so the delete
+        # would appear to work and then quietly undo itself.
+        jsonstore.delete_json(_project_path(pid))
     except OSError:
         return False
     rows = [r for r in index() if r.get("id") != pid]

@@ -6,6 +6,7 @@ is hard-coded, because the field keys differ per app.
 """
 import json
 import os
+from hub import jsonstore
 
 # --------------------------------------------------------------------------
 # Knack connection. Reused from the Hub when merged (hub/knack_api.py already
@@ -21,7 +22,11 @@ TICKETS_OBJECT = os.environ.get("KNACK_TICKETS_OBJECT", "")
 CLIENTS_OBJECT = os.environ.get("KNACK_CLIENTS_OBJECT", "")
 
 # Where the saved field map and the ticket snapshot live.
-DATA_DIR = os.environ.get("TICKETS_DATA_DIR", os.path.join("data", "tickets"))
+# Was a bare relative "data/tickets", which on Render is inside the container
+# and therefore wiped by every deploy — the field map saved on the setup page
+# lasted until the next ship, then silently fell back to the env defaults with
+# nothing to say it had. jsonstore's root is the mounted disk.
+DATA_DIR = os.environ.get("TICKETS_DATA_DIR", jsonstore.data_dir("tickets"))
 
 # How long a fetched ticket set is reused before Knack is hit again (seconds).
 CACHE_TTL = int(os.environ.get("TICKETS_CACHE_TTL", "900"))
@@ -168,17 +173,16 @@ def fieldmap_path():
 
 def load_saved_config():
     """Field map plus object keys saved from the setup page."""
-    try:
-        with open(fieldmap_path(), "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except Exception:
-        return {}
+    data = jsonstore.read_json(fieldmap_path(), default={})
+    return data if isinstance(data, dict) else {}
 
 
 def save_config(payload):
+    # Hand-mapped Knack field ids. Opaque, entered once, and re-deriving them
+    # means someone reading field_2338 off the Knack builder again — so this
+    # is backed up rather than left on the disk alone.
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(fieldmap_path(), "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2)
+    jsonstore.write_json(fieldmap_path(), payload, indent=2)
     return payload
 
 

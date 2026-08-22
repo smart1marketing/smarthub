@@ -13,11 +13,11 @@ than overwriting, so nothing a client approved can be silently lost.
 from __future__ import annotations
 
 import datetime as _dt
-import json
 import os
 import re
 import secrets
 import threading
+from hub import jsonstore
 
 _lock = threading.Lock()
 MAX_PROJECTS = 4000
@@ -45,21 +45,20 @@ def _path() -> str:
     return os.path.join(data_dir(), "projects.json")
 
 
+# Reads and writes go through hub.jsonstore, which keeps the atomic .tmp +
+# rename this module already had and adds a mirror into the database. The
+# Render disk these files live on is not part of the database backup and does
+# not survive being recreated, and every draft, rewrite and hand edit
+# this module deliberately appends rather than overwrites lives in here.
+
 def _read() -> list[dict]:
-    try:
-        with open(_path(), encoding="utf-8") as fh:
-            rows = json.load(fh)
-        return rows if isinstance(rows, list) else []
-    except (OSError, ValueError):
-        return []
+    rows = jsonstore.read_json(_path(), default=[])
+    return rows if isinstance(rows, list) else []
 
 
 def _write(rows: list[dict]):
     with _lock:
-        tmp = _path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(rows[:MAX_PROJECTS], fh, indent=1)
-        os.replace(tmp, _path())
+        jsonstore.write_json(_path(), rows[:MAX_PROJECTS], indent=1)
 
 
 def all_projects() -> list[dict]:

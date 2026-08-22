@@ -10,6 +10,7 @@ from typing import Any
 
 import requests
 from dotenv import load_dotenv
+from hub import jsonstore
 from flask import Flask, jsonify, render_template, request
 
 
@@ -61,7 +62,15 @@ PDF_LOGO_URL = os.getenv("PDF_LOGO_URL", "").strip()
 # the app derives it from the incoming request.
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
 ENABLE_PDF = os.getenv("ENABLE_PDF", "1").strip() not in ("0", "false", "False", "")
+# The generated PDF stays here: it is served straight off /static/reports/ and
+# is rebuilt from the report JSON anyway, so it is a genuine cache.
 REPORT_DIR = os.path.join(app.static_folder, "reports")
+
+# The report JSON does not. It is what /r/<id> renders for a restaurant we
+# handed a link to, and inside static/ it was thrown away by every deploy —
+# the local fallback for "Cloudinary isn't configured" had nothing behind it.
+# On the persistent disk and mirrored into the database, the link survives both.
+REPORT_JSON_DIR = jsonstore.data_dir("restaurant-reports")
 
 # CORS — the tool is embedded same-origin via iframe, but ALLOWED_ORIGINS is honored
 # so the API can be called from an explicit allow-list if ever needed.
@@ -611,9 +620,8 @@ def _store_report_json(report: dict, report_id: str) -> bool:
     still works for the PDF-download polling on the same instance."""
     if not CLOUDINARY_URL:
         try:
-            os.makedirs(REPORT_DIR, exist_ok=True)
-            with open(os.path.join(REPORT_DIR, f"{report_id}.json"), "w", encoding="utf-8") as fh:
-                json.dump(report, fh)
+            jsonstore.write_json(
+                os.path.join(REPORT_JSON_DIR, f"{report_id}.json"), report)
             return True
         except Exception:
             app.logger.exception("Local report JSON store failed")
@@ -633,10 +641,15 @@ def _store_report_json(report: dict, report_id: str) -> bool:
 
 def _fetch_report_json(report_id: str):
     if not CLOUDINARY_URL:
-        path = os.path.join(REPORT_DIR, f"{report_id}.json")
         try:
-            if os.path.isfile(path):
-                with open(path, "r", encoding="utf-8") as fh:
+            report = jsonstore.read_json(
+                os.path.join(REPORT_JSON_DIR, f"{report_id}.json"), default=None)
+            if report is not None:
+                return report
+            # Anything written before the move still lives under static/.
+            legacy = os.path.join(REPORT_DIR, f"{report_id}.json")
+            if os.path.isfile(legacy):
+                with open(legacy, "r", encoding="utf-8") as fh:
                     return json.load(fh)
         except Exception:
             app.logger.exception("Local report JSON read failed")

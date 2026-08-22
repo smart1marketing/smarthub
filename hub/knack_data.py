@@ -137,11 +137,15 @@ def _period_label(yyyymm) -> str:
     return s
 
 
+# The one file in this module that is not re-readable from anywhere. Knack
+# reports what is true today; it has no record of what was true last March, so
+# a past period here exists in this file and nowhere else and cannot be
+# recomputed at any price. It reads like a cache — it sits next to the Knack
+# JSONs and is rewritten on every dashboard load — which is exactly why it is
+# worth saying that it is not one. Through hub.jsonstore into the backup.
 def _history_path() -> str:
-    base = "/var/data" if os.path.isdir("/var/data") else os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-    os.makedirs(base, exist_ok=True)
-    return os.path.join(base, "hub-metrics-history.json")
+    from . import jsonstore
+    return os.path.join(jsonstore.data_root(), "hub-metrics-history.json")
 
 
 # Metrics worth trending. Snapshotted per Knack period so the dashboard can say
@@ -167,18 +171,16 @@ def _snapshot(period: str, values: dict) -> dict:
     up to date and past periods keep the last value they were given.
     """
     path = _history_path()
-    try:
-        with open(path, encoding="utf-8") as fh:
-            hist = json.load(fh)
-    except (OSError, ValueError):
+    from . import jsonstore
+    hist = jsonstore.read_json(path, default={})
+    if not isinstance(hist, dict):
         hist = {}
     if period:
         entry = hist.get(period) or {}
         entry.update({k: v for k, v in values.items() if v is not None})
         hist[period] = entry
         try:
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump(hist, fh)
+            jsonstore.write_json(path, hist)
         except OSError:
             pass
     return hist
@@ -216,10 +218,9 @@ def _website_movement(period, websites_active) -> int | None:
     """Websites carry no month-over-month fields, so the Hub snapshots the
     active count per Knack period and compares to the previous period."""
     path = _history_path()
-    try:
-        with open(path, encoding="utf-8") as fh:
-            hist = json.load(fh)
-    except (OSError, ValueError):
+    from . import jsonstore
+    hist = jsonstore.read_json(path, default={})
+    if not isinstance(hist, dict):
         hist = {}
     key = str(period or "")
     if key:
@@ -227,8 +228,7 @@ def _website_movement(period, websites_active) -> int | None:
         entry["websites_active"] = websites_active
         hist[key] = entry
         try:
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump(hist, fh)
+            jsonstore.write_json(path, hist)
         except OSError:
             pass
     prev_keys = sorted(k for k in hist if k.isdigit() and k < key)
